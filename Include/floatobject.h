@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 typedef struct {
-    PyObject_HEAD
+    PyObject_HEAD // #define PyObject_HEAD
     double ob_fval;
 } PyFloatObject;
 

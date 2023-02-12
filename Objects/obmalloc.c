@@ -130,8 +130,21 @@
  *
  * Although not required, for better performance and space efficiency,
  * it is recommended that SMALL_REQUEST_THRESHOLD is set to a power of 2.
+ * 
+ * 最大大小阈值，低于该阈值的 malloc 请求被认为是
+足够小以便使用预分配的内存池。 你可以调
+此值根据您的应用程序行为和内存需求而定。
+
+以下不变量必须成立：
+
+对齐 <= SMALL_REQUEST_THRESHOLD <= 256
+SMALL_REQUEST_THRESHOLD 可以被 ALIGNMENT 整除
+虽然不是必需的，但为了更好的性能和空间效率，
+建议将 SMALL_REQUEST_THRESHOLD 设置为 2 的幂。
+ * 
  */
 #define SMALL_REQUEST_THRESHOLD	256
+// 256/8=32,  block 的大小有32种, 每个8的倍数算一种,也就是32种
 #define NB_SMALL_SIZE_CLASSES	(SMALL_REQUEST_THRESHOLD / ALIGNMENT)
 
 /*
@@ -142,7 +155,15 @@
  * have to be.  In theory, if SYSTEM_PAGE_SIZE is larger than the native page
  * size, then `POOL_ADDR(p)->arenaindex' could rarely cause a segmentation
  * violation fault.  4K is apparently OK for all the platforms that python
- * currently targets.
+ * currently targets. 
+ * 系统的 VMM 页面大小可以在大多数 unices 上获得
+getpagesize() 调用或从各种头文件中推导出来。 做
+事情更简单，我们假设它是 4K，这对大多数系统来说都是可以的。
+如果这是本机页面大小可能会更好，但事实并非如此
+不得不。 理论上，如果 SYSTEM_PAGE_SIZE 大于原生页面
+大小，那么 `POOL_ADDR(p)->arenaindex' 很少会导致分段
+违规过失。 4K 显然适用于 python 的所有平台
+目前的目标。
  */
 #define SYSTEM_PAGE_SIZE	(4 * 1024)
 #define SYSTEM_PAGE_SIZE_MASK	(SYSTEM_PAGE_SIZE - 1)
@@ -179,7 +200,7 @@
  * Size of the pools used for small blocks. Should be a power of 2,
  * between 1K and SYSTEM_PAGE_SIZE, that is: 1k, 2k, 4k.
  */
-#define POOL_SIZE		SYSTEM_PAGE_SIZE	/* must be 2^N */
+#define POOL_SIZE		SYSTEM_PAGE_SIZE	/* must be 2^N  4KB */
 #define POOL_SIZE_MASK		SYSTEM_PAGE_SIZE_MASK
 
 /*
@@ -251,9 +272,9 @@ struct arena_object {
 	/* The address of the arena, as returned by malloc.  Note that 0
 	 * will never be returned by a successful malloc, and is used
 	 * here to mark an arena_object that doesn't correspond to an
-	 * allocated arena.
+	 * allocated arena. 
 	 */
-	uptr address;
+	uptr address; // malloc后的arena的地址
 
 	/* Pool-aligned pointer to the next pool to be carved off. */
 	block* pool_address;
@@ -261,12 +282,12 @@ struct arena_object {
 	/* The number of available pools in the arena:  free pools + never-
 	 * allocated pools.
 	 */
-	uint nfreepools;
+	uint nfreepools; // 连接空闲pool的单向链表
 
 	/* The total number of pools in the arena, whether or not available. */
 	uint ntotalpools;
 
-	/* Singly-linked list of available pools. */
+	/* Singly-linked list of available pools. 连接空闲pool的单向链表 */
 	struct pool_header* freepools;
 
 	/* Whenever this arena_object is not associated with an allocated
@@ -408,7 +429,7 @@ the prevpool member.
 
 #define PTA(x)	((poolp )((uchar *)&(usedpools[2*(x)]) - 2*sizeof(block *)))
 #define PT(x)	PTA(x), PTA(x)
-
+// usedpools 是 pool_header 的指针型的数组, 64个
 static poolp usedpools[2 * ((NB_SMALL_SIZE_CLASSES + 7) / 8) * 8] = {
 	PT(0), PT(1), PT(2), PT(3), PT(4), PT(5), PT(6), PT(7)
 #if NB_SMALL_SIZE_CLASSES > 8
@@ -475,7 +496,7 @@ static struct arena_object* arenas = NULL;
 static uint maxarenas = 0;
 
 /* The head of the singly-linked, NULL-terminated list of available
- * arena_objects.
+ * arena_objects. 现在未使用的 arena_object 的单向链表
  */
 static struct arena_object* unused_arena_objects = NULL;
 
@@ -523,7 +544,7 @@ new_arena(void)
 		/* Double the number of arena objects on each allocation.
 		 * Note that it's possible for `numarenas` to overflow.
 		 */
-		numarenas = maxarenas ? maxarenas << 1 : INITIAL_ARENA_OBJECTS;
+		numarenas = maxarenas ? maxarenas << 1 : INITIAL_ARENA_OBJECTS; // 16 或两倍最大arenas
 		if (numarenas <= maxarenas)
 			return NULL;	/* overflow */
 #if SIZEOF_SIZE_T <= SIZEOF_INT
@@ -531,10 +552,10 @@ new_arena(void)
 			return NULL;	/* overflow */
 #endif
 		nbytes = numarenas * sizeof(*arenas);
-		arenaobj = (struct arena_object *)realloc(arenas, nbytes);
+		arenaobj = (struct arena_object *)realloc(arenas, nbytes);  /* 在第1个参数为NULL时，realloc与malloc相同 */
 		if (arenaobj == NULL)
 			return NULL;
-		arenas = arenaobj;
+		arenas = arenaobj; // -> static struct arena_object* arenas = NULL;
 
 		/* We might need to fix pointers that were copied.  However,
 		 * new_arena only gets called when all the pages in the
@@ -546,23 +567,23 @@ new_arena(void)
 		assert(unused_arena_objects == NULL);
 
 		/* Put the new arenas on the unused_arena_objects list. */
-		for (i = maxarenas; i < numarenas; ++i) {
+		for (i = maxarenas; i < numarenas; ++i) {  /* unused_arena_objects 生成列表 */
 			arenas[i].address = 0;	/* mark as unassociated */
-			arenas[i].nextarena = i < numarenas - 1 ?
+			arenas[i].nextarena = i < numarenas - 1 ?    /* 只在末尾存入NULL，除此之外都指向下一个指针, 连接起来 */
 					       &arenas[i+1] : NULL;
 		}
 
 		/* Update globals. */
 		unused_arena_objects = &arenas[maxarenas];
-		maxarenas = numarenas;
+		maxarenas = numarenas; // 更新arenas总大小
 	}
 
 	/* Take the next available arena object off the head of the list. */
 	assert(unused_arena_objects != NULL);
 	arenaobj = unused_arena_objects;
-	unused_arena_objects = arenaobj->nextarena;
+	unused_arena_objects = arenaobj->nextarena;  /* 取出 */
 	assert(arenaobj->address == 0);
-	arenaobj->address = (uptr)malloc(ARENA_SIZE);
+	arenaobj->address = (uptr)malloc(ARENA_SIZE); /* 分配arena（256K字节）地址可能没有按4K对齐 */
 	if (arenaobj->address == 0) {
 		/* The allocation failed: return NULL after putting the
 		 * arenaobj back.
@@ -578,16 +599,16 @@ new_arena(void)
 	if (narenas_currently_allocated > narenas_highwater)
 		narenas_highwater = narenas_currently_allocated;
 #endif
-	arenaobj->freepools = NULL;
+	arenaobj->freepools = NULL;  // 将分配到的 arena 内部分割为 pool
 	/* pool_address <- first pool-aligned address in the arena
 	   nfreepools <- number of whole pools that fit after alignment */
 	arenaobj->pool_address = (block*)arenaobj->address;
-	arenaobj->nfreepools = ARENA_SIZE / POOL_SIZE;
+	arenaobj->nfreepools = ARENA_SIZE / POOL_SIZE; // 池数量=总字节(256KB)/每个池大小(4KB)=64
 	assert(POOL_SIZE * arenaobj->nfreepools == ARENA_SIZE);
-	excess = (uint)(arenaobj->address & POOL_SIZE_MASK);
+	excess = (uint)(arenaobj->address & POOL_SIZE_MASK);  //在此使用 POOL_SIZE_MASK 来对用 malloc() 保留的 arena 的地址进行屏蔽处理，计算超过的量（excess）, 裁剪
 	if (excess != 0) {
 		--arenaobj->nfreepools;
-		arenaobj->pool_address += POOL_SIZE - excess;
+		arenaobj->pool_address += POOL_SIZE - excess; // 池地址对齐到下一个4K起始地址
 	}
 	arenaobj->ntotalpools = arenaobj->nfreepools;
 
@@ -740,12 +761,12 @@ PyObject_Malloc(size_t nbytes)
 	/*
 	 * This implicitly redirects malloc(0).
 	 */
-	if ((nbytes - 1) < SMALL_REQUEST_THRESHOLD) {
+	if ((nbytes - 1) < SMALL_REQUEST_THRESHOLD) { // 是否小于等于256
 		LOCK();
 		/*
-		 * Most frequent paths first
+		 * Most frequent paths first 
 		 */
-		size = (uint)(nbytes - 1) >> ALIGNMENT_SHIFT;
+		size = (uint)(nbytes - 1) >> ALIGNMENT_SHIFT;  // 将申请的字节数变换成 usedpools 的指定索引。申请的字节数除以对齐值就是索引, 8的倍数
 		pool = usedpools[size + size];
 		if (pool != pool->nextpool) {
 			/*
@@ -910,7 +931,8 @@ redirect:
 	 */
 	if (nbytes == 0)
 		nbytes = 1;
-	return (void *)malloc(nbytes);
+  /* 当申请的内存大小大于256字节时的内存分配(第0层) */
+	return (void *)malloc(nbytes); 
 }
 
 /* free */

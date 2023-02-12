@@ -117,7 +117,7 @@ typedef Py_intptr_t	Py_ssize_t;
 #define PY_SIZE_MAX ((size_t)-1)
 #endif
 
-/* Largest positive value of type Py_ssize_t. */
+/* Largest positive value of type Py_ssize_t. 最大值 */
 #define PY_SSIZE_T_MAX ((Py_ssize_t)(((size_t)-1)>>1))
 /* Smallest negative value of type Py_ssize_t. */
 #define PY_SSIZE_T_MIN (-PY_SSIZE_T_MAX-1)

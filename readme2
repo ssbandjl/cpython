@@ -1,0 +1,26 @@
+typedef struct _object
+
+obmalloc.c
+
+
+对象头 宏
+define PyObject_HEAD
+
+
+
+PyObject_Malloc
+
+分配竞技场 -> 池
+new_arena(void)
+
+Objects/obmalloc.c
+  static poolp usedpools
+
+
+分配block
+PyObject_Malloc(size_t nbytes)
+
+
+byte = 20 /* 申请的字节数*/
+byte = (20 - 1) >> 3 /* 对齐：结果 2, 19是8的2倍 */
+pool = usedpools[byte+byte] /* 因为是两两一组，所以索引加倍: index 4 */

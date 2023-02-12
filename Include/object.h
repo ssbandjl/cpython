@@ -99,8 +99,8 @@ whose size is determined when the object is allocated.
  * in addition, be cast to PyVarObject*.
  */
 typedef struct _object {
-	_PyObject_HEAD_EXTRA
-	Py_ssize_t ob_refcnt;
+	_PyObject_HEAD_EXTRA // 链表pre/next
+	Py_ssize_t ob_refcnt; // 引用计数
 	struct _typeobject *ob_type;
 } PyObject;
 
