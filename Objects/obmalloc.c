@@ -116,7 +116,7 @@
 #define ALIGNMENT_SHIFT		3
 #define ALIGNMENT_MASK		(ALIGNMENT - 1)
 
-/* Return the number of bytes in size class I, as a uint. */
+/* Return the number of bytes in size class I, as a uint. 2+1<<3=24 索引转size */
 #define INDEX2SIZE(I) (((uint)(I) + 1) << ALIGNMENT_SHIFT)
 
 /*
@@ -309,6 +309,7 @@ struct arena_object {
 };
 
 #undef  ROUNDUP
+/* 向上取整 */
 #define ROUNDUP(x)		(((x) + ALIGNMENT_MASK) & ~ALIGNMENT_MASK)
 #define POOL_OVERHEAD		ROUNDUP(sizeof(struct pool_header))
 
@@ -429,7 +430,7 @@ the prevpool member.
 
 #define PTA(x)	((poolp )((uchar *)&(usedpools[2*(x)]) - 2*sizeof(block *)))
 #define PT(x)	PTA(x), PTA(x)
-// usedpools 是 pool_header 的指针型的数组, 64个
+// usedpools 使用的池, 是 pool_header 的指针型的数组, 64个, 巧妙利用连个指针(next,prev)防止数组过大
 static poolp usedpools[2 * ((NB_SMALL_SIZE_CLASSES + 7) / 8) * 8] = {
 	PT(0), PT(1), PT(2), PT(3), PT(4), PT(5), PT(6), PT(7)
 #if NB_SMALL_SIZE_CLASSES > 8
@@ -544,15 +545,15 @@ new_arena(void)
 		/* Double the number of arena objects on each allocation.
 		 * Note that it's possible for `numarenas` to overflow.
 		 */
-		numarenas = maxarenas ? maxarenas << 1 : INITIAL_ARENA_OBJECTS; // 16 或两倍最大arenas
+		numarenas = maxarenas ? maxarenas << 1 : INITIAL_ARENA_OBJECTS; // 16 或两倍最大arenas, 第一次: maxarenas=0, numarenas=16
 		if (numarenas <= maxarenas)
-			return NULL;	/* overflow */
+			return NULL;	/* overflow 溢出 */
 #if SIZEOF_SIZE_T <= SIZEOF_INT
 		if (numarenas > PY_SIZE_MAX / sizeof(*arenas))
 			return NULL;	/* overflow */
 #endif
-		nbytes = numarenas * sizeof(*arenas);
-		arenaobj = (struct arena_object *)realloc(arenas, nbytes);  /* 在第1个参数为NULL时，realloc与malloc相同 */
+		nbytes = numarenas * sizeof(*arenas); /* 总字节 */
+		arenaobj = (struct arena_object *)realloc(arenas, nbytes);  /* 第一次, 在第1个参数(arenas)为NULL时，realloc与malloc相同 */
 		if (arenaobj == NULL)
 			return NULL;
 		arenas = arenaobj; // -> static struct arena_object* arenas = NULL;
@@ -567,7 +568,7 @@ new_arena(void)
 		assert(unused_arena_objects == NULL);
 
 		/* Put the new arenas on the unused_arena_objects list. */
-		for (i = maxarenas; i < numarenas; ++i) {  /* unused_arena_objects 生成列表 */
+		for (i = maxarenas; i < numarenas; ++i) {  /* maxarenas=0, numarenas=16, unused_arena_objects 生成列表 */
 			arenas[i].address = 0;	/* mark as unassociated */
 			arenas[i].nextarena = i < numarenas - 1 ?    /* 只在末尾存入NULL，除此之外都指向下一个指针, 连接起来 */
 					       &arenas[i+1] : NULL;
@@ -580,19 +581,19 @@ new_arena(void)
 
 	/* Take the next available arena object off the head of the list. */
 	assert(unused_arena_objects != NULL);
-	arenaobj = unused_arena_objects;
-	unused_arena_objects = arenaobj->nextarena;  /* 取出 */
+	arenaobj = unused_arena_objects; /* arenaobj指向第一个 */
+	unused_arena_objects = arenaobj->nextarena;  /* 空闲链表指向下一个 */
 	assert(arenaobj->address == 0);
 	arenaobj->address = (uptr)malloc(ARENA_SIZE); /* 分配arena（256K字节）地址可能没有按4K对齐 */
 	if (arenaobj->address == 0) {
 		/* The allocation failed: return NULL after putting the
-		 * arenaobj back.
+		 * arenaobj back. 分配失败, 将对象放回头部(回滚)
 		 */
 		arenaobj->nextarena = unused_arena_objects;
 		unused_arena_objects = arenaobj;
 		return NULL;
 	}
-
+  /* 分配成功, 当前分配总数+1 */
 	++narenas_currently_allocated;
 #ifdef PYMALLOC_DEBUG
 	++ntimes_arena_allocated;
@@ -600,15 +601,15 @@ new_arena(void)
 		narenas_highwater = narenas_currently_allocated;
 #endif
 	arenaobj->freepools = NULL;  // 将分配到的 arena 内部分割为 pool
-	/* pool_address <- first pool-aligned address in the arena
+	/* pool_address <- first pool-aligned address in the arena 现将地址指向同一处内存
 	   nfreepools <- number of whole pools that fit after alignment */
 	arenaobj->pool_address = (block*)arenaobj->address;
 	arenaobj->nfreepools = ARENA_SIZE / POOL_SIZE; // 池数量=总字节(256KB)/每个池大小(4KB)=64
 	assert(POOL_SIZE * arenaobj->nfreepools == ARENA_SIZE);
 	excess = (uint)(arenaobj->address & POOL_SIZE_MASK);  //在此使用 POOL_SIZE_MASK 来对用 malloc() 保留的 arena 的地址进行屏蔽处理，计算超过的量（excess）, 裁剪
 	if (excess != 0) {
-		--arenaobj->nfreepools;
-		arenaobj->pool_address += POOL_SIZE - excess; // 池地址对齐到下一个4K起始地址
+		--arenaobj->nfreepools; /* 空闲个数-1 */
+		arenaobj->pool_address += POOL_SIZE - excess; // 池地址对齐到下一个4K起始地址, 结合图
 	}
 	arenaobj->ntotalpools = arenaobj->nfreepools;
 
@@ -744,6 +745,7 @@ int Py_ADDRESS_IN_RANGE(void *P, poolp pool) Py_NO_INLINE;
 void *
 PyObject_Malloc(size_t nbytes)
 {
+  /* block ptr */
 	block *bp;
 	poolp pool;
 	poolp next;
@@ -762,32 +764,47 @@ PyObject_Malloc(size_t nbytes)
 	 * This implicitly redirects malloc(0).
 	 */
 	if ((nbytes - 1) < SMALL_REQUEST_THRESHOLD) { // 是否小于等于256
-		LOCK();
+		LOCK(); /* 线程锁 */
 		/*
 		 * Most frequent paths first 
 		 */
 		size = (uint)(nbytes - 1) >> ALIGNMENT_SHIFT;  // 将申请的字节数变换成 usedpools 的指定索引。申请的字节数除以对齐值就是索引, 8的倍数
-		pool = usedpools[size + size];
-		if (pool != pool->nextpool) {
+		pool = usedpools[size + size]; 
+    /* 取出pool,参考结构
+    usedpools:0x101eca020
+    index:0, head:0x101eca010, nextpool:0x101eca010, prevpool:0x101eca010
+    index:1, head:0x101eca010, nextpool:0x101eca010, prevpool:0x101eca010
+    index:2, head:0x101eca020, nextpool:0x101eca020, prevpool:0x101eca020
+    index:3, head:0x101eca020, nextpool:0x101eca020, prevpool:0x101eca020
+    index:4, head:0x101eca030, nextpool:0x101eca030, prevpool:0x101eca030
+    index:5, head:0x101eca030, nextpool:0x101eca030, prevpool:0x101eca030
+    index:6, head:0x101eca040, nextpool:0x101eca040, prevpool:0x101eca040
+    index:7, head:0x101eca040, nextpool:0x101eca040, prevpool:0x101eca040
+    ...
+    index:30, head:0x101eca100, nextpool:0x101eca100, prevpool:0x101eca100
+    index:31, head:0x101eca100, nextpool:0x101eca100, prevpool:0x101eca100
+    sizeof(block *):8
+    */
+		if (pool != pool->nextpool) { /* 第一次不走这里, 这里表示存在大小合适的pool */
 			/*
 			 * There is a used pool for this size class.
 			 * Pick up the head block of its free list.
 			 */
 			++pool->ref.count;
-			bp = pool->freeblock;
+			bp = pool->freeblock; /* 先通过空闲链表取出block（使用完毕的block） */
 			assert(bp != NULL);
 			if ((pool->freeblock = *(block **)bp) != NULL) {
 				UNLOCK();
 				return (void *)bp;
 			}
 			/*
-			 * Reached the end of the free list, try to extend it.
+			 * Reached the end of the free list, try to extend it. 没有使用完的block, 则从未使用的block中分配
 			 */
 			if (pool->nextoffset <= pool->maxnextoffset) {
 				/* There is room for another block. */
 				pool->freeblock = (block*)pool +
 						  pool->nextoffset;
-				pool->nextoffset += INDEX2SIZE(size);
+				pool->nextoffset += INDEX2SIZE(size); /* 设定到下一个空block的偏移量 */
 				*(block **)(pool->freeblock) = NULL;
 				UNLOCK();
 				return (void *)bp;
@@ -812,19 +829,19 @@ PyObject_Malloc(size_t nbytes)
 				goto redirect;
 			}
 #endif
-			usable_arenas = new_arena();
+			usable_arenas = new_arena(); /* 第一次先分配竞技场,切割pool */
 			if (usable_arenas == NULL) {
 				UNLOCK();
-				goto redirect;
+				goto redirect; /* 分配失败,重定向导标签, 用malloc分配 */
 			}
 			usable_arenas->nextarena =
-				usable_arenas->prevarena = NULL;
+				usable_arenas->prevarena = NULL;   /* 切断联系 */
 		}
 		assert(usable_arenas->address != 0);
 
 		/* Try to get a cached free pool. */
 		pool = usable_arenas->freepools;
-		if (pool != NULL) {
+		if (pool != NULL) {  /* 第一次分配arena后, freepools指向NULL, 不进这里 */
 			/* Unlink from cached pools. */
 			usable_arenas->freepools = pool->nextpool;
 
@@ -868,7 +885,7 @@ PyObject_Malloc(size_t nbytes)
 			next->nextpool = pool;
 			next->prevpool = pool;
 			pool->ref.count = 1;
-			if (pool->szidx == size) {
+			if (pool->szidx == size) { /* 第一次不走 */
 				/* Luckily, this pool last contained blocks
 				 * of the same size class, so its header
 				 * and free list are already initialized.
@@ -883,30 +900,36 @@ PyObject_Malloc(size_t nbytes)
 			 * contain just the second block, and return the first
 			 * block.
 			 */
-			pool->szidx = size;
-			size = INDEX2SIZE(size);
+			pool->szidx = size; /* if size=2 */
+			size = INDEX2SIZE(size); /* size=24 */
 			bp = (block *)pool + POOL_OVERHEAD;
 			pool->nextoffset = POOL_OVERHEAD + (size << 1);
 			pool->maxnextoffset = POOL_SIZE - size;
 			pool->freeblock = bp + size;
+      /* 设定到下一个空block的偏移量 */
 			*(block **)(pool->freeblock) = NULL;
 			UNLOCK();
 			return (void *)bp;
 		}
 
-		/* Carve off a new pool. */
+		/* Carve off a new pool. 第一次执行, 需要开辟一个pool 初始化空pool */
 		assert(usable_arenas->nfreepools > 0);
 		assert(usable_arenas->freepools == NULL);
 		pool = (poolp)usable_arenas->pool_address;
 		assert((block*)pool <= (block*)usable_arenas->address +
 		                       ARENA_SIZE - POOL_SIZE);
-		pool->arenaindex = usable_arenas - arenas;
+		pool->arenaindex = usable_arenas - arenas; /* 设定arena_object的位置, 可用地址-数组首地址=索引, 数组指针相减得到的是索引相减*/
 		assert(&arenas[pool->arenaindex] == usable_arenas);
-		pool->szidx = DUMMY_SIZE_IDX;
-		usable_arenas->pool_address += POOL_SIZE;
+    /* arenas |0|1|2|...|usable_arenas|..|max| 
+              ^         ^
+              |         |
+            首地址     可用地址
+    */
+		pool->szidx = DUMMY_SIZE_IDX; /* 输入一个虚拟的大值 */
+		usable_arenas->pool_address += POOL_SIZE; /* 向后偏移一个池 */
 		--usable_arenas->nfreepools;
 
-		if (usable_arenas->nfreepools == 0) {
+		if (usable_arenas->nfreepools == 0) { /* 如果没有可用的pool，就设定下一个arena */
 			assert(usable_arenas->nextarena == NULL ||
 			       usable_arenas->nextarena->prevarena ==
 			       	   usable_arenas);
